@@ -1,0 +1,10 @@
+{:itonami.blueprint/id "cloud-itonami-unspsc-39"
+ :itonami.blueprint/name "Independent Solar & EV-Charging Install & Diagnostics"
+ :itonami.blueprint/unspsc-segment "39"
+ :itonami.blueprint/domain :energy/solar-ev-electrical
+ :itonami.blueprint/license "AGPL-3.0-or-later"
+ :itonami.blueprint/social-impact [:decarbonization :energy-affordability :local-jobs]
+ :itonami.blueprint/governor :electrical-install-governor
+ :itonami.blueprint/robotics true
+ :itonami.blueprint/required-technologies [:robotics :telemetry :forms :dmn :bpmn :audit-ledger]
+ :itonami.blueprint/status :public-oss}
