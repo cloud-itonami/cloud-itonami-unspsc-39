@@ -12,6 +12,18 @@ Complements
 [`cloud-itonami-3512`](https://github.com/cloud-itonami/cloud-itonami-3512)
 (Community Renewable Energy Operations) at the install/diagnostics layer.
 
+**Status: design blueprint, no code implemented yet.** This repository
+has zero files under `src/` and no `test/` directory — the
+Diagnostics Advisor and Electrical Install Governor described below do
+not exist in code. It is not (yet) a governed Advisor⊣Governor
+actuation actor; the Core Contract section specifies what that
+pipeline is intended to enforce once built, not current behavior. See
+[`cloud-itonami-isco-1324`](https://github.com/cloud-itonami/cloud-itonami-isco-1324)
+for this fleet's minimal implemented reference (`actor`/`advisor`/
+`governor`/`store`), and the `cloud-itonami-assoc-*` /
+`cloud-itonami-municipality-*` / `cloud-itonami-lei-*` repos for this
+fleet's honest not-an-actuation-actor disclaimer pattern.
+
 ## Robotics premise
 
 All cloud-itonami verticals are designed on the premise that a **robot
@@ -22,7 +34,7 @@ Install Governor** that gates it. The governor never dispatches hardware
 itself; `:high`/`:safety-critical` actions (such as work on live circuits
 or grid interconnection) require human sign-off.
 
-## Core Contract
+## Core Contract (design intent — not yet implemented)
 
 ```text
 site survey + install/repair request
@@ -34,9 +46,12 @@ Diagnostics Advisor -> Electrical Install Governor -> install/repair, or human s
 robot inspection actions (gated) + commissioning record + audit ledger
 ```
 
-No automated diagnosis can dispatch a robot action the governor refuses,
-suppress a commissioning record, or skip a live-circuit safety gate
-without governor approval and audit evidence.
+**No code exists yet in this repo** — no `src/`, no `test/`, only this
+design document plus `blueprint.edn` and `docs/`. Once built, no
+automated diagnosis will be able to dispatch a robot action the
+governor refuses, suppress a commissioning record, or skip a
+live-circuit safety gate without governor approval and audit evidence
+— but none of that is enforced today.
 
 ## Capability layer
 
