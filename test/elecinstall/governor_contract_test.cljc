@@ -1,0 +1,219 @@
+(ns elecinstall.governor-contract-test
+  "The governor contract as executable tests -- this vertical's own
+  scope boundary ('does NOT energize/de-energize or actuate a circuit
+  directly... does NOT self-issue a commissioning/interconnection-
+  approval certification') implemented faithfully. The single
+  invariant under test:
+
+    DiagnosticsAdvisor never schedules a repair, flags a safety
+    concern, or issues a commissioning record the Electrical Install
+    Governor would reject; `:schedule-repair`/`:flag-safety-concern`/
+    `:issue-commissioning-record` NEVER auto-commit at any phase;
+    `:log-diagnostic-reading` (no physical/financial risk) MAY
+    auto-commit when clean; and every decision (commit OR hold) leaves
+    exactly one ledger fact."
+  (:require [clojure.test :refer [deftest is testing]]
+            [langgraph.graph :as g]
+            [elecinstall.store :as store]
+            [elecinstall.operation :as op]))
+
+(defn- fresh []
+  (let [db (-> (store/mem-store) (store/sample-data!))]
+    [db (op/build db)]))
+
+(def coordinator {:actor-id "coord-1" :actor-role :install-coordinator :phase 3})
+
+(defn- exec-op [actor tid request context]
+  (g/run* actor {:request request :context context} {:thread-id tid}))
+
+(defn- approve! [actor tid]
+  (g/run* actor {:approval {:status :approved :by "coord-1"}} {:thread-id tid :resume? true}))
+
+(defn- reject! [actor tid]
+  (g/run* actor {:approval {:status :rejected :by "coord-1"}} {:thread-id tid :resume? true}))
+
+(deftest clean-log-diagnostic-reading-auto-commits
+  (let [[db actor] (fresh)
+        res (exec-op actor "t1"
+                  {:op :log-diagnostic-reading :effect :propose :subject "circuit-001"
+                   :patch {:fault-type :none}} coordinator)]
+    (is (= :commit (get-in res [:state :disposition])))
+    (is (= :none (:fault-type (store/circuit db "circuit-001"))) "SSoT actually updated")
+    (is (= 1 (count (store/ledger db))))))
+
+(deftest schedule-repair-always-needs-approval
+  (testing "scheduling is never in any phase's :auto set -- always human approval, even when clean"
+    (let [[db actor] (fresh)
+          res (exec-op actor "t2"
+                    {:op :schedule-repair :effect :propose :subject "rpr-1"
+                     :value {:site-id "site-001" :repair-type :panel-fault-repair
+                             :visit-date "2026-08-01" :actuate-circuit? false}}
+                    coordinator)]
+      (is (= :interrupted (:status res)))
+      (let [r2 (approve! actor "t2")]
+        (is (= :commit (get-in r2 [:state :disposition])))
+        (is (true? (:scheduled? (store/repair db "rpr-1"))))
+        (is (= 1 (count (store/repair-history db))))))))
+
+(deftest effect-not-propose-is-held
+  (testing "a request whose own :effect is not :propose -> HOLD, never reaches a human"
+    (let [[db actor] (fresh)
+          res (exec-op actor "t3"
+                    {:op :log-diagnostic-reading :effect :direct-write :subject "circuit-001"
+                     :patch {:fault-type :none}} coordinator)]
+      (is (= :hold (get-in res [:state :disposition])))
+      (is (not= :interrupted (:status res)))
+      (is (some #{:not-propose-effect} (-> (store/ledger db) first :basis))))))
+
+(deftest unknown-op-is-held
+  (let [[db actor] (fresh)
+        res (exec-op actor "t4" {:op :energize-circuit :effect :propose :subject "x"} coordinator)]
+    (is (= :hold (get-in res [:state :disposition])))
+    (is (some #{:unknown-op} (-> (store/ledger db) first :basis)))))
+
+(deftest site-not-verified-is-held-and-unoverridable
+  (testing "scheduling against an unverified/unregistered site -> HOLD, settles immediately, no interrupt"
+    (let [[db actor] (fresh)
+          res (exec-op actor "t5"
+                    {:op :schedule-repair :effect :propose :subject "rpr-2"
+                     :value {:site-id "site-002" :repair-type :charger-fault-repair
+                             :visit-date "2026-08-01" :actuate-circuit? false}}
+                    coordinator)]
+      (is (= :hold (get-in res [:state :disposition])))
+      (is (not= :interrupted (:status res)))
+      (is (some #{:site-not-verified} (-> (store/ledger db) last :basis)))
+      (is (empty? (store/repair-history db))))))
+
+(deftest circuit-not-verified-is-held-and-unoverridable
+  (testing "issuing a commissioning record against an unverified/unregistered circuit -> HOLD, settles immediately, no interrupt"
+    (let [[db actor] (fresh)
+          res (exec-op actor "t6"
+                    {:op :issue-commissioning-record :effect :propose :subject "cms-2"
+                     :value {:circuit-id "circuit-003" :load-amps 30.0
+                             :description "solar inverter commissioning"}}
+                    coordinator)]
+      (is (= :hold (get-in res [:state :disposition])))
+      (is (not= :interrupted (:status res)))
+      (is (some #{:circuit-not-verified} (-> (store/ledger db) last :basis)))
+      (is (empty? (store/commissioning-history db))))))
+
+(deftest load-exceeds-rated-capacity-is-held-and-unoverridable
+  (testing "a commissioning proposal whose load would exceed the circuit's own logged rated capacity -> HOLD"
+    (let [[db actor] (fresh)
+          res (exec-op actor "t7"
+                    {:op :issue-commissioning-record :effect :propose :subject "cms-3"
+                     :value {:circuit-id "circuit-002" :load-amps 20.0
+                             :description "additional charger commissioning"}}
+                    coordinator)]
+      (is (= :hold (get-in res [:state :disposition])))
+      (is (not= :interrupted (:status res)))
+      (is (some #{:load-exceeds-rated-capacity} (-> (store/ledger db) last :basis)))
+      (is (empty? (store/commissioning-history db))))))
+
+(deftest circuit-actuate-is-held-and-permanently-blocked
+  (testing "a proposal that sets :actuate-circuit? true -> HOLD, PERMANENT, never reaches request-approval even though the site is verified and registered"
+    (let [[db actor] (fresh)
+          res (exec-op actor "t8"
+                    {:op :schedule-repair :effect :propose :subject "rpr-3"
+                     :value {:site-id "site-001" :repair-type :emergency-de-energize
+                             :visit-date "2026-09-01" :actuate-circuit? true}}
+                    coordinator)]
+      (is (= :hold (get-in res [:state :disposition])) "settles immediately, no interrupt")
+      (is (not= :interrupted (:status res)))
+      (is (some #{:circuit-actuate-blocked} (-> (store/ledger db) last :basis)))
+      (is (empty? (store/repair-history db))))))
+
+(deftest certification-authority-is-held-and-permanently-blocked
+  (testing "a proposal that sets :issue-certification? true -> HOLD, PERMANENT, never reaches request-approval -- this actor is never the commissioning/interconnection-approval authority"
+    (let [[db actor] (fresh)
+          res (exec-op actor "t8b"
+                    {:op :log-diagnostic-reading :effect :propose :subject "circuit-001"
+                     :patch {:issue-certification? true}}
+                    coordinator)]
+      (is (= :hold (get-in res [:state :disposition])) "settles immediately, no interrupt")
+      (is (not= :interrupted (:status res)))
+      (is (some #{:certification-authority-blocked} (-> (store/ledger db) last :basis)))
+      (is (not (true? (:issue-certification? (store/circuit db "circuit-001"))))
+          "fabricated self-certification never lands in the SSoT"))))
+
+(deftest schedule-repair-double-schedule-is-held
+  (testing "scheduling the SAME repair record twice -> HOLD on the second attempt"
+    (let [[db actor] (fresh)
+          _ (exec-op actor "t9a" {:op :schedule-repair :effect :propose :subject "rpr-1"
+                                  :value {:site-id "site-001" :repair-type :panel-fault-repair
+                                          :visit-date "2026-08-01" :actuate-circuit? false}} coordinator)
+          _ (approve! actor "t9a")
+          res (exec-op actor "t9" {:op :schedule-repair :effect :propose :subject "rpr-1"
+                                   :value {:site-id "site-001" :repair-type :panel-fault-repair
+                                           :visit-date "2026-08-01" :actuate-circuit? false}} coordinator)]
+      (is (= :hold (get-in res [:state :disposition])))
+      (is (some #{:already-scheduled} (-> (store/ledger db) last :basis)))
+      (is (= 1 (count (store/repair-history db))) "still only the one earlier schedule"))))
+
+(deftest invalid-fault-type-is-held
+  (let [[db actor] (fresh)
+        res (exec-op actor "t10" {:op :log-diagnostic-reading :effect :propose :subject "circuit-001"
+                                  :patch {:fault-type :haunted-wiring}} coordinator)]
+    (is (= :hold (get-in res [:state :disposition])))
+    (is (some #{:invalid-fault-type} (-> (store/ledger db) last :basis)))
+    (is (not= :haunted-wiring (:fault-type (store/circuit db "circuit-001"))) "fabricated fault-type never lands in the SSoT")))
+
+(deftest invalid-voltage-is-held
+  (let [[db actor] (fresh)
+        res (exec-op actor "t10b" {:op :log-diagnostic-reading :effect :propose :subject "circuit-001"
+                                   :patch {:voltage-v 99999.0}} coordinator)]
+    (is (= :hold (get-in res [:state :disposition])))
+    (is (some #{:invalid-voltage} (-> (store/ledger db) last :basis)))
+    (is (not= 99999.0 (:voltage-v (store/circuit db "circuit-001"))) "fabricated voltage never lands in the SSoT")))
+
+(deftest invalid-current-is-held
+  (let [[db actor] (fresh)
+        res (exec-op actor "t11" {:op :log-diagnostic-reading :effect :propose :subject "circuit-001"
+                                  :patch {:current-a 99999.0}} coordinator)]
+    (is (= :hold (get-in res [:state :disposition])))
+    (is (some #{:invalid-current} (-> (store/ledger db) last :basis)))
+    (is (not= 99999.0 (:current-a (store/circuit db "circuit-001"))) "fabricated current never lands in the SSoT")))
+
+(deftest safety-concern-always-escalates-even-high-confidence
+  (testing "flag-safety-concern always escalates -- never auto-committed, regardless of confidence"
+    (let [[db actor] (fresh)
+          res (exec-op actor "t12" {:op :flag-safety-concern :effect :propose :subject "concern-1"
+                                    :value {:circuit-id "circuit-001" :severity :moderate
+                                            :description "thermal anomaly at panel connector"}}
+                       coordinator)]
+      (is (= :interrupted (:status res)))
+      (let [r2 (approve! actor "t12")]
+        (is (= :commit (get-in r2 [:state :disposition])))
+        (is (= 1 (count (store/safety-concerns db))))))))
+
+(deftest safety-concern-approval-rejected-leaves-no-record-only-a-hold-fact
+  (let [[db actor] (fresh)
+        _ (exec-op actor "t13" {:op :flag-safety-concern :effect :propose :subject "concern-2"
+                                :value {:circuit-id "circuit-001" :severity :low :description "y"}}
+                   coordinator)
+        r (reject! actor "t13")]
+    (is (= :hold (get-in r [:state :disposition])))
+    (is (= 0 (count (store/safety-concerns db))) "rejected approval never reaches the commit node")
+    (is (= 1 (count (store/ledger db))))))
+
+(deftest issue-commissioning-record-always-needs-approval
+  (testing "a CLEAN commissioning-record proposal is never auto-eligible -- always escalates, even below any capacity threshold"
+    (let [[db actor] (fresh)
+          res (exec-op actor "t14" {:op :issue-commissioning-record :effect :propose :subject "cms-1"
+                                    :value {:circuit-id "circuit-001" :load-amps 20.0
+                                            :description "EV charger install"}}
+                       coordinator)]
+      (is (= :interrupted (:status res)))
+      (let [r2 (approve! actor "t14")]
+        (is (= :commit (get-in r2 [:state :disposition])))
+        (is (= 1 (count (store/commissioning-history db))))))))
+
+(deftest every-decision-leaves-one-ledger-fact
+  (testing "write-only-through-ledger: N settled operations -> N ledger facts"
+    (let [[db actor] (fresh)]
+      (exec-op actor "a" {:op :log-diagnostic-reading :effect :propose :subject "circuit-001"
+                          :patch {:fault-type :none}} coordinator)
+      (exec-op actor "b" {:op :log-diagnostic-reading :effect :propose :subject "circuit-001"
+                          :patch {:fault-type :haunted-wiring}} coordinator)
+      (is (= 2 (count (store/ledger db)))
+          "one commit + one hold, both recorded"))))

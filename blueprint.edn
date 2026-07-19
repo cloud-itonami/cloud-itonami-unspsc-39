@@ -7,4 +7,30 @@
  :itonami.blueprint/governor :electrical-install-governor
  :itonami.blueprint/robotics true
  :itonami.blueprint/required-technologies [:robotics :telemetry :forms :dmn :bpmn :audit-ledger]
- :itonami.blueprint/status :public-oss}
+ :itonami.blueprint/status :public-oss
+ :itonami.blueprint/maturity :implemented
+ :itonami.blueprint/implemented-slice
+ "DiagnosticsAdvisor ⊣ Electrical Install Governor, langgraph-clj
+ StateGraph, append-only audit ledger. An install-and-diagnostics
+ operator coordination actor (panel/charger diagnostic-reading data
+ logging, repair/install-visit scheduling against customer sites,
+ live-circuit/grid-interconnection safety-concern flagging,
+ commissioning-record coordination against an electrical circuit) --
+ not direct circuit-actuation authority and not commissioning/
+ interconnection-approval-certification authority. Four ops
+ (`:log-diagnostic-reading` / `:schedule-repair` / `:flag-safety-
+ concern` / `:issue-commissioning-record`), all `:effect :propose`
+ only. Twelve concrete governor checks elaborate this blueprint's four
+ HARD invariants: propose-only effect, closed op allowlist, closed
+ proposal-effect allowlist (no direct circuit control), permanent
+ circuit-actuate block (grounded in OSHA 29 CFR 1910.333 de-
+ energization/lockout-tagout and NFPA 70E), permanent commissioning/
+ interconnection-approval-certification-authority block, independent
+ site verification/registration before repair scheduling, independent
+ circuit verification/registration before commissioning coordination,
+ independent cumulative committed-load recompute against the circuit's
+ own logged rated capacity, double-schedule guard, fault-type
+ validation, voltage plausibility validation, and current plausibility
+ validation. Safety-concern flagging ALWAYS escalates to a human
+ qualified electrician; `:log-diagnostic-reading` is the only op
+ eligible to auto-commit, and only at phase 3 when governor-clean."}

@@ -1,0 +1,155 @@
+(ns elecinstall.sim
+  "Demo driver -- `clojure -M:dev:run`. Walks a clean install operator
+  through intake -> repair/install-visit scheduling (escalate/approve)
+  -> safety-concern flag (escalate/approve) -> commissioning-record
+  coordination (escalate/approve), then shows HARD-hold scenarios: a
+  mis-wired request whose own `:effect` is not `:propose`, an
+  unrecognized op, a repair scheduled against an UNVERIFIED/
+  unregistered site, a commissioning record coordinated against an
+  UNVERIFIED/unregistered circuit, a commissioning proposal that would
+  exceed the circuit's own logged rated capacity, a proposal that
+  tries to ACTUATE a circuit directly (permanently blocked, no
+  override), a proposal that tries to self-issue a commissioning/
+  interconnection-approval certification (permanently blocked, no
+  override), a double-schedule of the same repair, a diagnostic-
+  reading patch with a fabricated fault-type, a diagnostic-reading
+  patch with an implausible voltage, and a diagnostic-reading patch
+  with an implausible current reading.
+
+  Like every sibling actor's own demo, each check is exercised directly
+  and independently below, one request per HARD-hold scenario, the SAME
+  'exercise the failure mode directly, never only via a happy-path
+  actuation' discipline `parksafety`'s ADR-2607071922 Decision 5 and
+  every sibling since establish."
+  (:require [langgraph.graph :as g]
+            [elecinstall.store :as store]
+            [elecinstall.operation :as op]))
+
+(def coordinator {:actor-id "coord-1" :actor-role :install-coordinator :phase 3})
+
+(defn- exec-op [actor tid request context]
+  (g/run* actor {:request request :context context} {:thread-id tid}))
+
+(defn- approve! [actor tid]
+  (g/run* actor {:approval {:status :approved :by "coord-1"}} {:thread-id tid :resume? true}))
+
+(defn -main [& _args]
+  (let [db (-> (store/mem-store) (store/sample-data!))
+        actor (op/build db)]
+
+    (println "== log-diagnostic-reading circuit-001 (clean patch -> phase-3 auto-commit) ==")
+    (println (exec-op actor "t1"
+                       {:op :log-diagnostic-reading :effect :propose :subject "circuit-001"
+                        :patch {:fault-type :none :last-assessed "2026-07-14"}}
+                       coordinator))
+
+    (println "== schedule-repair rpr-1 on site-001 (verified, registered, residential site -- escalates, approve) ==")
+    (let [r (exec-op actor "t2"
+                      {:op :schedule-repair :effect :propose :subject "rpr-1"
+                       :value {:site-id "site-001" :repair-type :panel-fault-repair
+                               :visit-date "2026-08-01" :actuate-circuit? false}}
+                      coordinator)]
+      (println r)
+      (println "-- human qualified electrician approves --")
+      (println (approve! actor "t2")))
+
+    (println "== flag-safety-concern concern-1 on circuit-001 (always escalates -- approve) ==")
+    (let [r (exec-op actor "t3"
+                      {:op :flag-safety-concern :effect :propose :subject "concern-1"
+                       :value {:circuit-id "circuit-001" :severity :moderate
+                               :description "パネル接続部の異常発熱兆候、活線状態での作業要注意"}}
+                      coordinator)]
+      (println r)
+      (println "-- human qualified electrician approves --")
+      (println (approve! actor "t3")))
+
+    (println "== issue-commissioning-record cms-1 on circuit-001 (verified, registered, within rated capacity -- escalates, approve) ==")
+    (let [r (exec-op actor "t4"
+                      {:op :issue-commissioning-record :effect :propose :subject "cms-1"
+                       :value {:circuit-id "circuit-001" :load-amps 20.0
+                               :description "EV charger install commissioning"}}
+                      coordinator)]
+      (println r)
+      (println "-- human qualified electrician approves --")
+      (println (approve! actor "t4")))
+
+    (println "\n-- HARD-hold scenarios --\n")
+
+    (println "== log-diagnostic-reading with :effect other than :propose -> HARD hold (structural) ==")
+    (println (exec-op actor "t5"
+                       {:op :log-diagnostic-reading :effect :direct-write :subject "circuit-001"
+                        :patch {:fault-type :none}}
+                       coordinator))
+
+    (println "== unrecognized op -> HARD hold ==")
+    (println (exec-op actor "t6"
+                       {:op :energize-circuit :effect :propose :subject "circuit-001"}
+                       coordinator))
+
+    (println "== schedule-repair rpr-2 on site-002 (UNVERIFIED/unregistered fleet depot -> HARD hold) ==")
+    (println (exec-op actor "t7"
+                       {:op :schedule-repair :effect :propose :subject "rpr-2"
+                        :value {:site-id "site-002" :repair-type :charger-fault-repair
+                                :visit-date "2026-08-01" :actuate-circuit? false}}
+                       coordinator))
+
+    (println "== issue-commissioning-record cms-2 on circuit-003 (UNVERIFIED/unregistered circuit -> HARD hold) ==")
+    (println (exec-op actor "t8"
+                       {:op :issue-commissioning-record :effect :propose :subject "cms-2"
+                        :value {:circuit-id "circuit-003" :load-amps 30.0
+                                :description "solar inverter commissioning"}}
+                       coordinator))
+
+    (println "== issue-commissioning-record cms-3 on circuit-002 (20A would exceed capacity 100A vs committed 90A -> HARD hold) ==")
+    (println (exec-op actor "t9"
+                       {:op :issue-commissioning-record :effect :propose :subject "cms-3"
+                        :value {:circuit-id "circuit-002" :load-amps 20.0
+                                :description "additional charger commissioning"}}
+                       coordinator))
+
+    (println "== schedule-repair rpr-3 on site-001 with :actuate-circuit? true -> HARD hold, PERMANENT, never reaches a human ==")
+    (println (exec-op actor "t10"
+                       {:op :schedule-repair :effect :propose :subject "rpr-3"
+                        :value {:site-id "site-001" :repair-type :emergency-de-energize
+                                :visit-date "2026-09-01" :actuate-circuit? true}}
+                       coordinator))
+
+    (println "== schedule-repair rpr-1 AGAIN (double-schedule -> HARD hold) ==")
+    (println (exec-op actor "t11"
+                       {:op :schedule-repair :effect :propose :subject "rpr-1"
+                        :value {:site-id "site-001" :repair-type :panel-fault-repair
+                                :visit-date "2026-08-01" :actuate-circuit? false}}
+                       coordinator))
+
+    (println "== log-diagnostic-reading circuit-001 with a fabricated fault-type -> HARD hold ==")
+    (println (exec-op actor "t12"
+                       {:op :log-diagnostic-reading :effect :propose :subject "circuit-001"
+                        :patch {:fault-type :haunted-wiring}}
+                       coordinator))
+
+    (println "== log-diagnostic-reading circuit-001 with an implausible voltage -> HARD hold ==")
+    (println (exec-op actor "t13"
+                       {:op :log-diagnostic-reading :effect :propose :subject "circuit-001"
+                        :patch {:voltage-v 99999.0}}
+                       coordinator))
+
+    (println "== log-diagnostic-reading circuit-001 with an implausible current reading -> HARD hold ==")
+    (println (exec-op actor "t14"
+                       {:op :log-diagnostic-reading :effect :propose :subject "circuit-001"
+                        :patch {:current-a 99999.0}}
+                       coordinator))
+
+    (println "== log-diagnostic-reading circuit-001 attempting to self-issue a commissioning/interconnection-approval certification -> HARD hold, PERMANENT ==")
+    (println (exec-op actor "t15"
+                       {:op :log-diagnostic-reading :effect :propose :subject "circuit-001"
+                        :patch {:issue-certification? true}}
+                       coordinator))
+
+    (println "\n== audit ledger ==")
+    (doseq [f (store/ledger db)] (println f))
+
+    (println "\n== draft repair records ==")
+    (doseq [r (store/repair-history db)] (println r))
+
+    (println "\n== draft commissioning records ==")
+    (doseq [r (store/commissioning-history db)] (println r))))

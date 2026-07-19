@@ -1,0 +1,102 @@
+(ns elecinstall.store-contract-test
+  "The Store contract as executable tests. Single MemStore backend --
+  see `elecinstall.store` ns docstring for why a second
+  (Datomic-backed) backend is out of scope for this build."
+  (:require [clojure.test :refer [deftest is testing]]
+            [elecinstall.store :as store]))
+
+(defn- seeded [] (-> (store/mem-store) (store/sample-data!)))
+
+(deftest sample-data-read-basics
+  (let [s (seeded)]
+    (is (true? (:verified? (store/circuit s "circuit-001"))))
+    (is (true? (:registered? (store/circuit s "circuit-001"))))
+    (is (true? (:verified? (store/circuit s "circuit-002"))))
+    (is (true? (:registered? (store/circuit s "circuit-002"))))
+    (is (false? (:verified? (store/circuit s "circuit-003"))))
+    (is (false? (:registered? (store/circuit s "circuit-003"))))
+    (is (= ["circuit-001" "circuit-002" "circuit-003"] (mapv :id (store/all-circuits s))))
+    (is (true? (:verified? (store/site s "site-001"))))
+    (is (true? (:registered? (store/site s "site-001"))))
+    (is (false? (:verified? (store/site s "site-002"))))
+    (is (false? (:registered? (store/site s "site-002"))))
+    (is (= ["site-001" "site-002"] (mapv :id (store/all-sites s))))
+    (is (= [] (store/ledger s)))
+    (is (= [] (store/repair-history s)))
+    (is (= [] (store/commissioning-history s)))
+    (is (= [] (store/safety-concerns s)))
+    (is (zero? (store/next-repair-sequence s)))
+    (is (zero? (store/next-commissioning-sequence s)))
+    (is (false? (store/repair-already-scheduled? s "rpr-1")))
+    (is (nil? (store/repair s "rpr-1")))))
+
+(deftest fresh-store-has-no-circuits-or-sites
+  (let [s (store/mem-store)]
+    (is (= [] (store/all-circuits s)))
+    (is (nil? (store/circuit s "circuit-001")))
+    (is (= [] (store/all-sites s)))
+    (is (nil? (store/site s "site-001")))))
+
+(deftest circuit-upsert-merges-preserving-untouched-fields
+  (let [s (seeded)]
+    (store/commit-record! s {:effect :circuit/upsert :path ["circuit-001"]
+                             :value {:fault-type :ground-fault}})
+    (is (= :ground-fault (:fault-type (store/circuit s "circuit-001"))))
+    (is (true? (:verified? (store/circuit s "circuit-001"))) "unrelated field preserved")
+    (is (true? (:registered? (store/circuit s "circuit-001"))) "unrelated field preserved")))
+
+(deftest repair-schedule-commits-and-advances-sequence
+  (testing "commit-record! (like every sibling actor's own MemStore) returns the store `s`, not the domain result -- inspect the store directly, matching the discipline the actor's own :commit node relies on"
+    (let [s (seeded)]
+      (store/commit-record! s {:effect :repair/schedule :path ["rpr-1"]
+                               :value {:site-id "site-001" :repair-type :panel-fault-repair
+                                       :visit-date "2026-08-01"}})
+      (is (= "RPR-000000" (get (first (store/repair-history s)) "record_id")))
+      (is (= "repair-schedule-draft" (get (first (store/repair-history s)) "kind")))
+      (is (true? (:scheduled? (store/repair s "rpr-1"))))
+      (is (= "site-001" (:site-id (store/repair s "rpr-1"))))
+      (is (= 1 (count (store/repair-history s))))
+      (is (= 1 (store/next-repair-sequence s)))
+      (is (true? (store/repair-already-scheduled? s "rpr-1")))
+      (is (= "RPR-000000" (:repair-number (store/repair s "rpr-1")))))))
+
+(deftest safety-concern-flag-appends
+  (let [s (seeded)]
+    (store/commit-record! s {:effect :safety-concern/flag :path ["concern-1"]
+                             :value {:circuit-id "circuit-001" :severity :moderate}})
+    (is (= 1 (count (store/safety-concerns s))))
+    (is (= :moderate (:severity (first (store/safety-concerns s)))))
+    (store/commit-record! s {:effect :safety-concern/flag :path ["concern-2"]
+                             :value {:circuit-id "circuit-003" :severity :high}})
+    (is (= 2 (count (store/safety-concerns s))) "append-only")))
+
+(deftest commissioning-propose-commits-and-advances-sequence-and-circuit-load
+  (let [s (seeded)]
+    (store/commit-record! s {:effect :commissioning/propose :path ["cms-1"]
+                             :value {:circuit-id "circuit-001" :load-amps 20.0
+                                     :description "EV charger install"}})
+    (is (= "CMS-000000" (get (first (store/commissioning-history s)) "record_id")))
+    (is (= "commissioning-coordination-draft" (get (first (store/commissioning-history s)) "kind")))
+    (is (= 1 (count (store/commissioning-history s))))
+    (is (= 1 (store/next-commissioning-sequence s)))
+    (is (= "CMS-000000" (:commissioning-number (store/commissioning s "cms-1"))))
+    (is (= 60.0 (:committed-load-amps (store/circuit s "circuit-001")))
+        "40.0 seeded + 20.0 committed")))
+
+(deftest ledger-is-append-only-and-order-preserving
+  (let [s (store/mem-store)]
+    (store/append-ledger! s {:op :a :disposition :commit})
+    (store/append-ledger! s {:op :b :disposition :hold})
+    (is (= [:commit :hold] (mapv :disposition (store/ledger s))))))
+
+(deftest generic-commit-record-path-writes-a-raw-record-by-id
+  (testing "a record with no :effect key is written verbatim into the generic records map -- the store-level primitive underneath the domain-specific dispatch"
+    (let [s (store/mem-store)
+          record {:id "test-001" :data "test"}]
+      (store/commit-record! s record)
+      (is (= record (get (store/get-records s) "test-001"))))))
+
+(deftest get-ledger-alias-matches-ledger
+  (let [s (store/mem-store)]
+    (store/append-ledger! s {:t :x})
+    (is (= (store/ledger s) (store/get-ledger s)))))
