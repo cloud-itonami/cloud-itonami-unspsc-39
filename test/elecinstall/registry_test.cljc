@@ -1,0 +1,162 @@
+(ns elecinstall.registry-test
+  (:require [clojure.test :refer [deftest is]]
+            [elecinstall.registry :as r]))
+
+;; ----------------------------- site-verified? / site-registered? / site-ready? -----------------------------
+
+(deftest site-is-verified-when-flagged
+  (is (true? (r/site-verified? {:id "s1" :verified? true}))))
+
+(deftest site-is-not-verified-when-false-or-missing
+  (is (false? (r/site-verified? {:id "s1" :verified? false})))
+  (is (false? (r/site-verified? {:id "s1"}))))
+
+(deftest site-is-registered-when-flagged
+  (is (true? (r/site-registered? {:registered? true}))))
+
+(deftest site-is-not-registered-when-false-or-missing
+  (is (false? (r/site-registered? {:registered? false})))
+  (is (false? (r/site-registered? {}))))
+
+(deftest site-ready-requires-both
+  (is (true? (r/site-ready? {:verified? true :registered? true})))
+  (is (false? (r/site-ready? {:verified? true :registered? false})))
+  (is (false? (r/site-ready? {:verified? false :registered? true})))
+  (is (false? (r/site-ready? {}))))
+
+;; ----------------------------- circuit-verified? / circuit-registered? / circuit-ready? -----------------------------
+
+(deftest circuit-is-verified-when-flagged
+  (is (true? (r/circuit-verified? {:id "c1" :verified? true}))))
+
+(deftest circuit-is-not-verified-when-false-or-missing
+  (is (false? (r/circuit-verified? {:id "c1" :verified? false})))
+  (is (false? (r/circuit-verified? {:id "c1"}))))
+
+(deftest circuit-is-registered-when-flagged
+  (is (true? (r/circuit-registered? {:registered? true}))))
+
+(deftest circuit-is-not-registered-when-false-or-missing
+  (is (false? (r/circuit-registered? {:registered? false})))
+  (is (false? (r/circuit-registered? {}))))
+
+(deftest circuit-ready-requires-both
+  (is (true? (r/circuit-ready? {:verified? true :registered? true})))
+  (is (false? (r/circuit-ready? {:verified? true :registered? false})))
+  (is (false? (r/circuit-ready? {:verified? false :registered? true})))
+  (is (false? (r/circuit-ready? {}))))
+
+;; ----------------------------- load-exceeds-rated-capacity? -----------------------------
+
+(deftest small-load-within-capacity-does-not-exceed
+  (is (false? (r/load-exceeds-rated-capacity?
+               {:rated-capacity-amps 200.0 :committed-load-amps 40.0} 40.0))))
+
+(deftest load-that-pushes-past-capacity-exceeds
+  (is (true? (r/load-exceeds-rated-capacity?
+              {:rated-capacity-amps 100.0 :committed-load-amps 90.0} 20.0))))
+
+(deftest load-exactly-at-capacity-does-not-exceed
+  (is (false? (r/load-exceeds-rated-capacity?
+               {:rated-capacity-amps 100.0 :committed-load-amps 90.0} 10.0))
+      "exactly at capacity is not over, only strictly beyond"))
+
+(deftest missing-capacity-is-not-flagged-exceeded
+  (is (false? (r/load-exceeds-rated-capacity? {} 100.0)))
+  (is (false? (r/load-exceeds-rated-capacity? {:rated-capacity-amps 100.0} nil))))
+
+;; ----------------------------- fault-type-valid? -----------------------------
+
+(deftest known-fault-types-are-valid
+  (doseq [ft [:none :ground-fault :arc-fault :insulation-breakdown
+              :inverter-fault :connector-fault :overcurrent-trip :thermal-anomaly]]
+    (is (r/fault-type-valid? ft))))
+
+(deftest fabricated-fault-type-is-invalid
+  (is (not (r/fault-type-valid? :haunted-wiring)))
+  (is (not (r/fault-type-valid? nil))))
+
+;; ----------------------------- voltage-valid? -----------------------------
+
+(deftest typical-voltage-is-valid
+  (is (r/voltage-valid? 0))
+  (is (r/voltage-valid? 240.0))
+  (is (r/voltage-valid? 1000)))
+
+(deftest negative-voltage-is-invalid
+  (is (not (r/voltage-valid? -1))))
+
+(deftest excessive-voltage-is-invalid
+  (is (not (r/voltage-valid? 99999.0)))
+  (is (not (r/voltage-valid? 1001))))
+
+(deftest non-numeric-or-missing-voltage-is-invalid
+  (is (not (r/voltage-valid? nil)))
+  (is (not (r/voltage-valid? "240"))))
+
+;; ----------------------------- current-valid? -----------------------------
+
+(deftest typical-current-is-valid
+  (is (r/current-valid? 0))
+  (is (r/current-valid? 32.0))
+  (is (r/current-valid? 500)))
+
+(deftest negative-current-is-invalid
+  (is (not (r/current-valid? -1))))
+
+(deftest excessive-current-is-invalid
+  (is (not (r/current-valid? 99999.0)))
+  (is (not (r/current-valid? 501))))
+
+(deftest non-numeric-or-missing-current-is-invalid
+  (is (not (r/current-valid? nil)))
+  (is (not (r/current-valid? "32"))))
+
+;; ----------------------------- register-repair -----------------------------
+
+(deftest repair-is-a-draft-not-a-real-dispatch
+  (let [result (r/register-repair "rpr-1" "site-001" 0)]
+    (is (nil? (get-in result ["certificate" "proof"])))
+    (is (= (get-in result ["certificate" "issued_by_registry"]) false))
+    (is (= (get-in result ["certificate" "status"]) "draft-unsigned"))))
+
+(deftest repair-assigns-repair-number
+  (let [result (r/register-repair "rpr-1" "site-001" 7)]
+    (is (= (get result "repair_number") "RPR-000007"))
+    (is (= (get-in result ["record" "repair_id"]) "rpr-1"))
+    (is (= (get-in result ["record" "site_id"]) "site-001"))
+    (is (= (get-in result ["record" "kind"]) "repair-schedule-draft"))
+    (is (= (get-in result ["record" "immutable"]) true))))
+
+(deftest repair-validation-rules
+  (is (thrown? #?(:clj Exception :cljs js/Error) (r/register-repair "" "site-001" 0)))
+  (is (thrown? #?(:clj Exception :cljs js/Error) (r/register-repair "rpr-1" "" 0)))
+  (is (thrown? #?(:clj Exception :cljs js/Error) (r/register-repair "rpr-1" "site-001" -1))))
+
+;; ----------------------------- register-commissioning -----------------------------
+
+(deftest commissioning-is-a-draft-not-a-real-energization
+  (let [result (r/register-commissioning "cms-1" 0)]
+    (is (nil? (get-in result ["certificate" "proof"])))
+    (is (= (get-in result ["certificate" "issued_by_registry"]) false))
+    (is (= (get-in result ["certificate" "status"]) "draft-unsigned"))))
+
+(deftest commissioning-assigns-commissioning-number
+  (let [result (r/register-commissioning "cms-1" 7)]
+    (is (= (get result "commissioning_number") "CMS-000007"))
+    (is (= (get-in result ["record" "commissioning_id"]) "cms-1"))
+    (is (= (get-in result ["record" "kind"]) "commissioning-coordination-draft"))
+    (is (= (get-in result ["record" "immutable"]) true))))
+
+(deftest commissioning-validation-rules
+  (is (thrown? #?(:clj Exception :cljs js/Error) (r/register-commissioning "" 0)))
+  (is (thrown? #?(:clj Exception :cljs js/Error) (r/register-commissioning "cms-1" -1))))
+
+(deftest history-is-append-only
+  (let [c1 (r/register-repair "rpr-1" "site-001" 0)
+        hist (r/append [] c1)
+        c2 (r/register-repair "rpr-2" "site-001" 1)
+        hist2 (r/append hist c2)]
+    (is (= 2 (count hist2)))
+    (is (= "RPR-000000" (get-in hist2 [0 "record_id"])))
+    (is (= "RPR-000001" (get-in hist2 [1 "record_id"])))))
