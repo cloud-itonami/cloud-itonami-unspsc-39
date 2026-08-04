@@ -133,7 +133,27 @@
         so-far (:committed-load-amps circuit 0.0)]
     (and (number? capacity)
          (number? new-load-amps)
-         (> (+ (double so-far) (double new-load-amps)) (double capacity)))))
+         (number? so-far)
+         ;; Compared at 1/10000 of a unit, not on raw doubles. A shipment
+         ;; that fills a batch EXACTLY to its recorded capacity is legal,
+         ;; and comparing the raw sum flagged such shipments as over
+         ;; because the sum is not the double nearest the true total.
+         (> (Math/round (* 10000 (+ (double so-far) (double new-load-amps))))
+            (Math/round (* 10000 (double capacity))))))) 
+
+(defn load-exceeds-rated-capacity-checkable?
+  "Can `circuit`'s headroom actually be computed for `new-load-amps`?
+
+  `load-exceeds-rated-capacity?` answers only `over` / `not over`, and its
+  `(and (number? ...) ...)` guard made every un-checkable case fall
+  through as `not over` -- a batch with no recorded capacity, or a
+  shipment stating no amount, passed the over-capacity check silently.
+  Callers must ask this first: un-checkable is not headroom."
+  [circuit new-load-amps]
+  (boolean (and (map? circuit)
+                (number? (:rated-capacity-amps circuit))
+                (number? (:committed-load-amps circuit 0.0))
+                (number? new-load-amps))))
 
 (defn fault-type-valid?
   "Is `fault-type` one of the closed, known fault-type values? nil is
