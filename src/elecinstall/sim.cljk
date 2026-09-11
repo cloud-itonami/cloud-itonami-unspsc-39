@@ -1,5 +1,5 @@
 (ns elecinstall.sim
-  "Demo driver -- `clojure -M:dev:run`. Walks a clean install operator
+  "Demo driver -- `kbb -M:dev:run`. Walks a clean install operator
   through intake -> repair/install-visit scheduling (escalate/approve)
   -> safety-concern flag (escalate/approve) -> commissioning-record
   coordination (escalate/approve), then shows HARD-hold scenarios: a
