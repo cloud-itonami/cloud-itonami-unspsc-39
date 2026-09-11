@@ -177,9 +177,9 @@ telemetry, site scheduling, AHJ/utility interconnection-approval APIs)
 
 ## Verification
 
-- `cloud-itonami-unspsc-39`: `clojure -M:test` green (77 tests / 211
+- `cloud-itonami-unspsc-39`: `kbb -M:test` green (77 tests / 211
   assertions, 0 failures, 0 errors, verified from a fresh worktree
-  checkout), demo narrative (`clojure -M:dev:run`) exercises proposal
+  checkout), demo narrative (`kbb -M:dev:run`) exercises proposal
   submission, escalation, and every HARD-hold scenario directly
   (not-propose-effect, unknown-op, site-not-verified, circuit-not-
   verified, load-exceeds-rated-capacity, circuit-actuate-blocked,
@@ -193,7 +193,7 @@ telemetry, site scheduling, AHJ/utility interconnection-approval APIs)
 - `deps.edn` pins `io.github.kotoba-lang/langgraph` and
   `io.github.kotoba-lang/langchain` via `:local/root` directly in the
   top-level `:deps` (not only under a `:dev` alias), so a bare
-  `clojure -M:test` resolves offline inside the monorepo checkout.
+  `kbb -M:test` resolves offline inside the monorepo checkout.
 - OSHA 29 CFR 1910.333 and NFPA 70E were web-verified 2026-07-19
   against osha.gov / nfpa.org before being cited in
   `elecinstall.registry` and `elecinstall.governor` docstrings -- no
