@@ -1,5 +1,5 @@
 (ns elecinstall.registry-test
-  (:require [clojure.test :refer [deftest is]]
+  (:require [kotoba.test :refer [deftest is]]
             [elecinstall.registry :as r]))
 
 ;; ----------------------------- site-verified? / site-registered? / site-ready? -----------------------------
