@@ -4,7 +4,7 @@
   (HARD holds, escalation, phase gating) is exercised in
   `elecinstall.governor-contract-test`; the Store contract in
   `elecinstall.store-contract-test`."
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [kotoba.test :refer [deftest is testing]]
             [langgraph.graph :as g]
             [elecinstall.operation :as op]
             [elecinstall.store :as store]))
