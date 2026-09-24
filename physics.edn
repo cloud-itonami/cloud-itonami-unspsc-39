@@ -1,0 +1,44 @@
+;; What this vertical's robot physically does, declared for
+;; kotoba.robotics.process (kotoba-lang/robotics). `kbb -M:dev:physics` runs it.
+;;
+;; README "Robotics premise": a thermal/electrical-fault inspection robot
+;; performs panel and charger diagnostics for a solar and EV-charging
+;; install contractor. Its physical work: crawling up a tilted PV array row
+;; to inspect it, lifting a PV module onto the mounting rail during an
+;; install/repair, and the module heating in the sun when a shaded cell turns
+;; into a hot spot (what its thermal camera looks for).
+;;
+;; Every number without a cited source is marked `estimate` in its :basis.
+;; Replacing an estimate with a sourced value is this bot's growth work.
+{:physics/schema "itonami.physical-ai.spec.v1"
+ :repo "cloud-itonami/cloud-itonami-unspsc-39"
+ :cases
+ [{:id :array-row-crawl
+   :kind :transport
+   :procedure "inspection crawler drives 20 m up and along a tilted PV array row on the module glass"
+   :params {:mass-kg 25.0 :payload-kg 0.0 :distance-m 20.0 :v-max-mps 0.5 :a-max-mps2 0.3
+            :brake-decel-mps2 0.5 :drive-force-n 120.0 :crr 0.03 :cog-height-m 0.10
+            :support-half-length-m 0.30 :max-time-s 600.0}
+   :sweep {:param :slope-deg :values [10.0 15.0 20.0 25.0 30.0 35.0]}
+   :quantity :cycle-time-s
+   :limit {:max 60.0 :basis "estimate: one 20 m row inspected within a minute so a rooftop array is covered in one visit"}
+   :boundary {:lo 0.0 :hi 45.0}}
+  {:id :module-to-rail
+   :kind :manipulator
+   :procedure "arm lifts a PV module from the stack and offers it up to the mounting rail"
+   :params {:l1-m 0.90 :l2-m 0.80 :m1-kg 18.0 :m2-kg 12.0
+            :from [1.00 0.10] :to [0.60 1.10] :duration-s 4.0 :steps 500}
+   :sweep {:param :payload-kg :values [10.0 15.0 20.0 25.0 30.0]}
+   :quantity :peak-tau1-nm
+   :limit {:max 450.0 :basis "estimate: continuous shoulder torque of a 25 kg-payload-class arm on a mobile base"}
+   :boundary {:lo 1.0 :hi 60.0}}
+  {:id :module-hot-spot
+   :kind :thermal
+   :procedure "PV module laminate (glass/EVA/cell/backsheet) in 30 C air for 30 minutes of sun; absorbed irradiance plus a shaded cell's reverse-bias dissipation heat it; the backsheet is judged"
+   :params {:thickness-m 0.004 :conductivity-w-mk 1.0 :density-kg-m3 2400.0 :specific-heat-j-kgk 800.0
+            :t0-c 30.0 :t-hot-c 30.0 :h-front-w-m2k 15.0 :t-back-ambient-c 30.0 :h-back-w-m2k 8.0
+            :threshold-c 85.0 :duration-s 1800.0 :nodes 9}
+   :sweep {:param :q-gen-w-m3 :values [100000.0 200000.0 300000.0 400000.0 600000.0]}
+   :quantity :peak-back-c
+   :limit {:max 85.0 :basis "estimate: the +85 C upper operating temperature typical of PV module datasheets; to be replaced by the installed module's datasheet"}
+   :boundary {:lo 10000.0 :hi 1000000.0}}]}
